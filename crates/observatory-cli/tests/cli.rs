@@ -402,6 +402,52 @@ fn format_json_matches_the_json_flag() {
 }
 
 #[test]
+fn inspect_security_emits_deterministic_sarif() {
+    let file = write_temp(&minimal_module(), ".wasm");
+    let path = file.path().to_str().unwrap().to_string();
+    let run = || {
+        let output = binary()
+            .args(["inspect", &path, "--security", "--format", "sarif"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8(output).expect("utf-8 stdout")
+    };
+
+    let first = run();
+    assert_eq!(first, run(), "SARIF output must be deterministic");
+    let document: serde_json::Value = serde_json::from_str(&first).expect("valid SARIF JSON");
+    assert_eq!(document["version"], "2.1.0");
+    let rules = document["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .expect("rules");
+    let results = document["runs"][0]["results"].as_array().expect("results");
+    assert!(rules.iter().any(|rule| rule["id"] == "artifact.no-code"));
+    assert!(!results.is_empty());
+    for result in results {
+        let rule_id = result["ruleId"].as_str().expect("result rule id");
+        assert!(rules.iter().any(|rule| rule["id"] == rule_id));
+    }
+}
+
+#[test]
+fn sarif_requires_the_security_flag() {
+    let file = write_temp(&minimal_module(), ".wasm");
+    binary()
+        .args([
+            "inspect",
+            file.path().to_str().unwrap(),
+            "--format",
+            "sarif",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("inspect --security"));
+}
+
+#[test]
 fn format_human_is_an_alias_for_text() {
     binary()
         .args(["doctor", "--format", "human"])

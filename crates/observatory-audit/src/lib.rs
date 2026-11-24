@@ -235,6 +235,177 @@ pub const RULE_IDS: &[&str] = &[
     "type.duplicate-field",
 ];
 
+/// Short SARIF descriptions, sorted by rule id like [`RULE_IDS`].
+///
+/// A test keeps the two lists in sync. These are the same bounded heuristics
+/// documented in `docs/security.md`; none of them is a security certification.
+const RULE_DESCRIPTIONS: &[(&str, &str)] = &[
+    (
+        "artifact.duplicate-metadata-section",
+        "More than one Soroban metadata section is present",
+    ),
+    (
+        "artifact.memory64",
+        "Module declares a 64-bit linear memory, which Soroban does not use",
+    ),
+    (
+        "artifact.metadata-without-code",
+        "Soroban metadata is present but the module has no code section",
+    ),
+    (
+        "artifact.metadata-without-contract-spec",
+        "Soroban metadata is present but there is no `contractspecv0` section",
+    ),
+    ("artifact.no-code", "Module contains no code section"),
+    (
+        "artifact.no-contract-spec",
+        "Module has no `contractspecv0` section and may not be a Soroban contract",
+    ),
+    ("artifact.no-memory", "Module declares no linear memory"),
+    (
+        "artifact.oversized-spec",
+        "Contract specification section is unusually large",
+    ),
+    (
+        "artifact.truncated-report",
+        "Import, export, or custom-section listing was truncated",
+    ),
+    (
+        "event.too-many-prefix-topics",
+        "Event declares more than two prefix topics",
+    ),
+    (
+        "function.duplicate-param",
+        "Function has duplicate parameter names",
+    ),
+    ("function.empty-name", "Function has an empty name"),
+    (
+        "function.unknown-type",
+        "Function parameter references an unknown type",
+    ),
+    (
+        "interface.duplicate-event",
+        "Event name is declared more than once",
+    ),
+    (
+        "interface.duplicate-function",
+        "Function name is declared more than once",
+    ),
+    (
+        "interface.duplicate-type",
+        "Type name is declared more than once",
+    ),
+    ("interface.empty", "Interface declares no public entities"),
+    (
+        "interface.no-functions",
+        "Interface declares types or events but no functions",
+    ),
+    (
+        "naming.mixed-script",
+        "Name mixes ASCII and non-ASCII letters (possible homoglyph)",
+    ),
+    (
+        "naming.zero-width",
+        "Name contains zero-width or control characters",
+    ),
+    (
+        "spec.error",
+        "Specification validation found an inconsistency",
+    ),
+    (
+        "spec.info",
+        "Specification validation found an informational issue",
+    ),
+    ("spec.warning", "Specification validation found a warning"),
+    (
+        "type.duplicate-case",
+        "Union or enum declares a case more than once",
+    ),
+    (
+        "type.duplicate-field",
+        "Struct declares a field more than once",
+    ),
+];
+
+fn rule_description(id: &str) -> &'static str {
+    RULE_DESCRIPTIONS
+        .iter()
+        .find(|(rule, _)| *rule == id)
+        .map_or("Audit rule", |(_, description)| description)
+}
+
+/// Map an audit severity to a SARIF result level.
+fn sarif_level(severity: FindingSeverity) -> &'static str {
+    match severity {
+        FindingSeverity::Error => "error",
+        FindingSeverity::Warn => "warning",
+    }
+}
+
+/// Render an audit report as a deterministic SARIF 2.1.0 document.
+///
+/// Rules are emitted once per finding id and both rules and results are sorted,
+/// so identical reports produce byte-identical documents. Findings carry a
+/// `locations` entry only when the rule records a stable path. The document
+/// describes bounded heuristics; it is **not** a security certification and
+/// must not be presented as one.
+#[must_use]
+pub fn to_sarif(report: &AuditReport) -> serde_json::Value {
+    let mut findings: Vec<&Finding> = report.findings.iter().collect();
+    findings.sort_by(|a, b| {
+        a.id.cmp(&b.id)
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.message.cmp(&b.message))
+    });
+
+    let mut rules = Vec::new();
+    let mut seen = BTreeSet::new();
+    for finding in &findings {
+        if seen.insert(finding.id.as_str()) {
+            rules.push(serde_json::json!({
+                "id": finding.id,
+                "shortDescription": { "text": rule_description(&finding.id) },
+                "defaultConfiguration": { "level": sarif_level(finding.severity) },
+            }));
+        }
+    }
+
+    let results: Vec<serde_json::Value> = findings
+        .iter()
+        .map(|finding| {
+            let mut result = serde_json::json!({
+                "ruleId": finding.id,
+                "level": sarif_level(finding.severity),
+                "message": { "text": finding.message },
+            });
+            if let Some(path) = &finding.path {
+                result["locations"] = serde_json::json!([
+                    { "physicalLocation": { "artifactLocation": { "uri": path } } }
+                ]);
+            }
+            result
+        })
+        .collect();
+
+    serde_json::json!({
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "stellar-contract-platform",
+                    "informationUri": "https://github.com/AyinkxLab/stellar-contract-platform",
+                    "rules": rules,
+                }
+            },
+            "results": results,
+            "properties": {
+                "note": "Bounded deterministic heuristics; this is not a security certification."
+            },
+        }],
+    })
+}
+
 /// Rule ids that are experimental.
 ///
 /// Experimental rules are excluded by default; enable them explicitly through
@@ -1507,6 +1678,136 @@ mod tests {
                 .iter()
                 .all(|finding| !finding.id.starts_with("naming.")),
             "experimental naming rules must be off by default"
+        );
+    }
+
+    #[test]
+    fn rule_descriptions_cover_the_registry() {
+        let ids: Vec<&str> = RULE_DESCRIPTIONS.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, RULE_IDS);
+        for (id, description) in RULE_DESCRIPTIONS {
+            assert!(!description.trim().is_empty(), "empty description for {id}");
+        }
+    }
+
+    #[test]
+    fn sarif_document_has_a_valid_structure() {
+        let report = AuditReport::from_findings(vec![
+            finding(
+                "function.empty-name",
+                Some("function::"),
+                FindingSeverity::Error,
+            ),
+            finding("artifact.no-code", None, FindingSeverity::Warn),
+            finding(
+                "function.empty-name",
+                Some("function::second"),
+                FindingSeverity::Error,
+            ),
+        ]);
+        let document = to_sarif(&report);
+
+        assert_eq!(document["version"], "2.1.0");
+        assert_eq!(
+            document["$schema"],
+            "https://json.schemastore.org/sarif-2.1.0.json"
+        );
+        let runs = document["runs"].as_array().expect("runs array");
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert!(run["tool"]["driver"]["name"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty()));
+        assert!(run["properties"]["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("not a security certification")));
+
+        let rules = run["tool"]["driver"]["rules"]
+            .as_array()
+            .expect("rules array");
+        assert!(!rules.is_empty());
+        let mut rule_ids = Vec::new();
+        for rule in rules {
+            let id = rule["id"].as_str().expect("rule id");
+            assert!(RULE_IDS.contains(&id), "unregistered rule id `{id}`");
+            assert!(rule["shortDescription"]["text"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty()));
+            assert!(matches!(
+                rule["defaultConfiguration"]["level"].as_str(),
+                Some("error" | "warning" | "note" | "none")
+            ));
+            rule_ids.push(id.to_string());
+        }
+        let mut sorted_rules = rule_ids.clone();
+        sorted_rules.sort();
+        sorted_rules.dedup();
+        assert_eq!(rule_ids, sorted_rules, "rules must be sorted and unique");
+
+        let results = run["results"].as_array().expect("results array");
+        assert_eq!(results.len(), report.findings.len());
+        let mut result_keys = Vec::new();
+        for result in results {
+            let rule_id = result["ruleId"].as_str().expect("result rule id");
+            assert!(
+                rule_ids.iter().any(|id| id == rule_id),
+                "result references an undeclared rule `{rule_id}`"
+            );
+            assert!(matches!(
+                result["level"].as_str(),
+                Some("error" | "warning" | "note" | "none")
+            ));
+            assert!(!result["message"]["text"]
+                .as_str()
+                .expect("result message")
+                .is_empty());
+            match result["locations"].as_array() {
+                Some(locations) => {
+                    assert_eq!(locations.len(), 1);
+                    result_keys.push(format!(
+                        "{rule_id}|{}",
+                        locations[0]["physicalLocation"]["artifactLocation"]["uri"]
+                            .as_str()
+                            .expect("location uri")
+                    ));
+                }
+                None => result_keys.push(format!("{rule_id}|")),
+            }
+        }
+        let mut sorted_results = result_keys.clone();
+        sorted_results.sort();
+        assert_eq!(result_keys, sorted_results, "results must be sorted");
+        assert_eq!(
+            result_keys,
+            vec![
+                "artifact.no-code|",
+                "function.empty-name|function::",
+                "function.empty-name|function::second",
+            ]
+        );
+    }
+
+    #[test]
+    fn sarif_output_is_deterministic() {
+        let findings = vec![
+            finding("artifact.no-code", None, FindingSeverity::Warn),
+            finding(
+                "function.empty-name",
+                Some("function::b"),
+                FindingSeverity::Error,
+            ),
+            finding(
+                "function.empty-name",
+                Some("function::a"),
+                FindingSeverity::Error,
+            ),
+        ];
+        let first = to_sarif(&AuditReport::from_findings(findings.clone()));
+        let second = to_sarif(&AuditReport::from_findings(findings));
+        assert_eq!(first, second);
+        assert_eq!(
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&second).unwrap()
         );
     }
 }

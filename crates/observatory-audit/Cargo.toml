@@ -16,6 +16,7 @@ observatory-interface.workspace = true
 observatory-spec.workspace = true
 observatory-wasm.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 observatory-testutil.workspace = true
