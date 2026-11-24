@@ -17,4 +17,9 @@ serde.workspace = true
 stellar-xdr.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 observatory-testutil.workspace = true
+
+[[bench]]
+name = "parse"
+harness = false

@@ -65,6 +65,44 @@ $env:UPDATE_GOLDEN=1; cargo test -p observatory-cli --test golden
 | Event fixtures | `observatory-events` test helpers (base64 `ScVal`) |
 | Ledger entries | `stellar-xdr` `LedgerEntryData` encoded in tests |
 
+## Benchmarks
+
+Criterion benchmarks cover the performance-sensitive parsing and diffing paths:
+
+| Benchmark | Crate | Measures |
+| --------- | ----- | -------- |
+| `wasm/inspect/2000_functions` | `observatory-wasm` | `observatory_wasm::inspect` on a generated 2000-function module |
+| `spec/parse/3000_entries` | `observatory-spec` | `observatory_spec::parse` on 3000 generated spec entries |
+| `interface/canonicalize/1500_entities` | `observatory-interface` | sorting a reversed `ContractInterface` |
+| `interface/fingerprint/1500_entities` | `observatory-interface` | canonical JSON plus SHA-256 |
+| `diff/1500_entities` | `observatory-diff` | `observatory_diff::diff` between two large interfaces |
+
+Every input is built deterministically inside its bench file under
+`crates/<crate>/benches/`; there are no checked-in fixtures and no randomness.
+Each group uses a small sample size and a two-second measurement window so a
+full run stays practical in CI. Run one crate at a time:
+
+```bash
+cargo bench -p observatory-wasm
+cargo bench -p observatory-spec
+cargo bench -p observatory-interface
+cargo bench -p observatory-diff
+```
+
+`cargo bench` compiles in release mode by default. The numbers are
+**machine-dependent**: they are useful for comparing runs on the same machine
+and toolchain, not for comparing contributors or CI runners. The repository
+does not enforce a timing threshold; record a baseline locally before and after
+a change you suspect is a regression. Criterion writes its reports under
+`target/criterion/`.
+
+For a quick check that every bench target compiles and runs, use Criterion's
+test mode:
+
+```bash
+cargo bench -p observatory-wasm -- --test
+```
+
 ## Fuzzing
 
 `fuzz/` is a separate `cargo-fuzz` crate and is deliberately **not** a workspace
