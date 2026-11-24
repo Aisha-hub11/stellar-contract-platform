@@ -17,6 +17,11 @@ observatory-spec.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 observatory-testutil.workspace = true
 serde_json.workspace = true
 stellar-xdr.workspace = true
+
+[[bench]]
+name = "diff"
+harness = false

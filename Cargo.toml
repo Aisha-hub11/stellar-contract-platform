@@ -54,6 +54,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 wat = "1"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 observatory-core = { path = "crates/observatory-core", version = "0.1.0" }
 observatory-wasm = { path = "crates/observatory-wasm", version = "0.1.0" }
