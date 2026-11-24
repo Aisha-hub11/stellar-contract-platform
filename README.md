@@ -104,6 +104,7 @@ Early but practical. The project focuses on contract intelligence, compatibility
 - [SDKs](docs/sdk.md)
 - [Compatibility](docs/compatibility.md)
 - [Verification](docs/verification.md)
+- [Deployment inspection](docs/deployment.md)
 - [Demo](demo/README.md)
 - [Roadmap](docs/roadmap.md)
 - [Drips readiness and appeal checklist](docs/DRIPS_READINESS.md)

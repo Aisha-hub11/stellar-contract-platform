@@ -37,10 +37,10 @@ the `observatory-rpc` crate feature `live`, which is off by default:
 observatory-rpc = { path = "crates/observatory-rpc", features = ["live"] }
 ```
 
-`HttpTransport::new(endpoint)` rejects anything `Endpoint::parse` rejects
-(`https` only, except loopback `http`), then applies the SSRF policy before every
-request. Loopback endpoints use the local policy; all others must resolve to
-public addresses. The transport never follows redirects, ignores environment
+`HttpTransport::new(endpoint)` rejects anything `Endpoint::parse` rejects, then
+applies the SSRF policy before every request. See
+[endpoint validation and trust](#endpoint-validation-and-trust) for the exact
+rules and examples. The transport never follows redirects, ignores environment
 proxies, applies a 30-second request timeout, and caps a response body at 8 MiB;
 `with_limits` overrides both limits. Failures are reported as typed RPC errors
 that name the endpoint host, without echoing the URL or credentials.
@@ -48,6 +48,108 @@ that name the endpoint host, without echoing the URL or credentials.
 The CLI does not switch to the live transport in this build; commands continue
 to require a fixture. Wiring the transport into `deployment` and `verify` is
 tracked separately.
+
+## Endpoint validation and trust
+
+Endpoint strings are validated by `observatory_rpc::Endpoint::parse`. The
+platform config runs that validation when it loads `rpc.endpoint` and every
+`profiles.<name>.endpoint`, so a bad value fails before any analysis starts. The
+CLI validates `--rpc-url` the same way. `HttpTransport::new` parses the endpoint
+again, and every `send` re-parses it and re-applies the SSRF policy before
+connecting. This section is split into the URL rules (always enforced) and the
+address policy (applied by the live transport).
+
+### URL rules
+
+`Endpoint::parse` enforces all of the following:
+
+- The input must not be empty after trimming surrounding whitespace.
+- It must contain `://`; the scheme is case-insensitive and must be `https` or
+  `http`.
+- The authority must contain a host.
+- The authority must not contain `@`. Embedded credentials are rejected on
+  every scheme, not only `http`.
+- A bracketed IPv6 host must have a closing `]`, otherwise the endpoint is
+  malformed.
+- Plain `http` is accepted only for a loopback host. Every other host requires
+  `https`.
+
+The only hosts treated as loopback by this parser are `localhost`, any name
+ending in `.localhost`, `127.0.0.1`, and `::1` (case-insensitive). That is a
+narrower test than "any loopback address": for example,
+`http://127.0.0.2:8000` is rejected because `127.0.0.2` is not one of those
+names, even though the SSRF policy classifies it as loopback. Use `https` for
+other addresses, or a local name such as `dev.localhost`.
+
+Accepted examples:
+
+```text
+https://soroban-testnet.stellar.org
+https://rpc.example.org:8443/rpc
+http://localhost:8000
+http://127.0.0.1:8000
+http://dev.localhost:8000
+https://[::1]:9000
+```
+
+Rejected examples:
+
+| Endpoint | Reason |
+| -------- | ------ |
+| `http://example.com` | plain `http` is only allowed for loopback hosts |
+| `ftp://example.com` | unsupported scheme; only `https` and `http` are accepted |
+| `example.com` | missing scheme separator `://` |
+| `https://user:pass@example.com` | embedded credentials |
+| `https://` | missing host |
+| `https://[::1` | malformed IPv6 host (no closing `]`) |
+
+### Address policy (SSRF)
+
+After parsing, the live transport checks the target address before each
+connection. Loopback endpoints use `SsrfPolicy::local()`; every other endpoint
+uses `SsrfPolicy::strict()`. Both policies allow public addresses. The local
+policy additionally allows loopback; the strict policy does not. Every other
+address class is blocked by both:
+
+- private (RFC 1918: `10/8`, `172.16/12`, `192.168/16`);
+- link-local, including the cloud metadata address `169.254.169.254`;
+- IPv6 unique-local (`fc00::/7`) and IPv6 link-local (`fe80::/10`);
+- shared (`100.64.0.0/10`), benchmarking (`198.18.0.0/15`), documentation,
+  unspecified (`0.0.0.0`, `::`), multicast, broadcast, and reserved
+  (`240.0.0.0/4`) ranges.
+
+A literal IP is classified directly. A hostname is resolved with the endpoint's
+effective port, and **every** returned address must pass; one blocked address
+rejects the host. IPv4-mapped IPv6 addresses are classified as IPv4, so
+`::ffff:127.0.0.1` is treated as loopback rather than as a public IPv6 address.
+A host that cannot be resolved, or resolves to nothing, is rejected.
+
+The policy is an outbound-request guard, not a sandbox. Resolution happens
+during validation and the HTTP client then connects by hostname, so a DNS answer
+that changes between the check and the connection is a residual TOCTOU risk.
+
+### Trust model
+
+- **Endpoints are not authenticated.** The tool does not verify that an endpoint
+  is operated by Stellar, by a particular network, or by the party you expect.
+  It only enforces the URL and address rules above. A `https` URL gets the TLS
+  certificate check performed by the HTTP client, and that is the only
+  identity signal.
+- **RPC responses are untrusted input.** Responses are size-bounded before
+  parsing, JSON is decoded without trusting its shape, and returned XDR is
+  decoded with bounded readers and typed errors. A malformed, oversized, or
+  hostile response produces an error, not executed code.
+- **Fixtures are equally untrusted** when they come from an external source;
+  the fixture transport only removes the network hop, not the need to trust the
+  file's origin.
+- **Loopback `http` is a development affordance.** It sends plaintext to a local
+  process and cannot distinguish your own mock server from any other process on
+  the machine. Do not treat a result obtained this way as evidence about a real
+  network.
+- **A successful lookup is not an endorsement.** Deployment inspection reports
+  what the endpoint returned. It does not prove the endpoint was honest, that
+  the contract is safe, or that the reported WASM hash matches a release you
+  built.
 
 `rpc.json` maps method names to results:
 
