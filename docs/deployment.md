@@ -3,6 +3,9 @@
 `deployment inspect` looks up a deployed contract's instance entry and recovers
 the executable WASM hash.
 
+> To run the REST API itself as a container, see
+> [container-image.md](container-image.md).
+
 ## How it works
 
 1. The contract id (`C...` strkey) is decoded to its 32-byte hash.
