@@ -361,6 +361,17 @@ fn command_name(command: &Command) -> &'static str {
     }
 }
 
+/// Install the tracing subscriber: stderr logs filtered by `RUST_LOG`
+/// (default `info`). Spans carry no artifact contents.
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let format = if cli.json {
@@ -767,6 +778,7 @@ fn run(cli: &Cli, format: OutputFormat) -> Result<ObservatoryExit> {
             max_headers,
             max_body_bytes,
         }) => {
+            init_tracing();
             let config = observatory_platform::PlatformConfig {
                 require_auth: if *no_auth {
                     false

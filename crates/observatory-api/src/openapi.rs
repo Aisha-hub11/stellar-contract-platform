@@ -7,9 +7,19 @@
 use serde_json::{json, Value};
 
 use crate::api::{ERRORS_PATH, METRICS_PATH, ROUTES};
+use crate::pagination::{DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE};
 
 /// The OpenAPI version implemented by this document.
 pub const OPENAPI_VERSION: &str = "3.0.3";
+
+/// The paginated list endpoints: their GET operations accept `limit` and
+/// `cursor` query parameters and return a `Page` payload.
+const PAGINATED_PATHS: [&str; 4] = [
+    "/api/v1/jobs",
+    "/api/v1/keys",
+    "/api/v1/webhooks",
+    "/api/v1/audit/events",
+];
 
 /// Build the OpenAPI document for the v1 API.
 #[must_use]
@@ -65,6 +75,16 @@ pub fn document() -> Value {
                         "tool": { "type": "string" },
                         "version": { "type": "string" },
                         "data": { "type": "object" }
+                    }
+                },
+                "Page": {
+                    "type": "object",
+                    "required": ["items", "count", "has_more", "next_cursor"],
+                    "properties": {
+                        "items": { "type": "array" },
+                        "count": { "type": "integer", "minimum": 0 },
+                        "has_more": { "type": "boolean" },
+                        "next_cursor": { "type": ["string", "null"] }
                     }
                 },
                 "InspectRequest": {
@@ -255,6 +275,33 @@ fn operation_for(method: &str, path: &str) -> Value {
             "required": true,
             "schema": { "type": "string" }
         }]);
+    }
+    if method == "GET" && PAGINATED_PATHS.contains(&path) {
+        operation["parameters"] = json!([
+            {
+                "name": "limit",
+                "in": "query",
+                "required": false,
+                "description":
+                    "Maximum number of items to return (1..=1000); defaults to 100.",
+                "schema": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_PAGE_SIZE,
+                    "default": DEFAULT_PAGE_SIZE
+                }
+            },
+            {
+                "name": "cursor",
+                "in": "query",
+                "required": false,
+                "description":
+                    "Opaque cursor from a previous page's `next_cursor`; omit for the first page.",
+                "schema": { "type": "string" }
+            }
+        ]);
+        operation["responses"]["200"]["content"]["application/json"]["schema"] =
+            json!({ "$ref": "#/components/schemas/Page" });
     }
     if method == "POST" || method == "PATCH" {
         let schema = match request_schema_for(path) {

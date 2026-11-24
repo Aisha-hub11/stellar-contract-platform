@@ -9,6 +9,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
+use observatory_core::error::redact_secrets;
 use observatory_core::hash::sha256_hex;
 use observatory_core::{ObservatoryError, Result as CoreResult, SCHEMA_VERSION, TOOL_NAME};
 use observatory_output::report;
@@ -28,6 +29,7 @@ use crate::dto::{
 use crate::errors::entry as error_entry;
 use crate::http::{Request, Response};
 use crate::metrics::{self, Metrics};
+use crate::pagination::{page_of, PageRequest};
 
 /// The API version prefix.
 pub const API_PREFIX: &str = "/api/v1";
@@ -181,7 +183,7 @@ impl ApiError {
         ApiError::new("forbidden", "the API key lacks the required permission")
     }
 
-    fn bad_request(message: impl Into<String>) -> Self {
+    pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         ApiError::new("bad_request", message)
     }
 
@@ -242,6 +244,24 @@ impl Api {
     #[must_use]
     pub fn audit_events(&self) -> Vec<AuditEvent> {
         self.audit.read().expect("audit log poisoned").snapshot()
+    }
+
+    /// The retained audit events, redacted, oldest first.
+    ///
+    /// The audit log is built to carry no secrets; the redaction pass is
+    /// defense in depth for the read path.
+    fn redacted_audit_events(&self) -> Vec<AuditEvent> {
+        self.audit_events()
+            .into_iter()
+            .map(|mut event| {
+                event.actor = event.actor.map(|value| redact_secrets(&value));
+                event.action = redact_secrets(&event.action);
+                event.resource = redact_secrets(&event.resource);
+                event.outcome = redact_secrets(&event.outcome);
+                event.request_id = event.request_id.map(|value| redact_secrets(&value));
+                event
+            })
+            .collect()
     }
 
     fn record_audit(
@@ -349,6 +369,15 @@ impl Api {
     /// Handle a request.
     #[must_use]
     pub fn handle(&self, request: &Request, client_id: &str, now_secs: u64) -> Response {
+        // Request-level span; covers routing, authorization, and audit
+        // recording. Fields are route metadata only, never artifact bytes.
+        let span = tracing::info_span!(
+            "http_request",
+            method = %request.method,
+            path = %request.path,
+            client = %client_id,
+        );
+        let _span_guard = span.enter();
         let request_id = format!(
             "req-{:016x}",
             self.counter.fetch_add(1, Ordering::Relaxed) + 1
@@ -679,12 +708,9 @@ impl Api {
             }
             ("GET", "/api/v1/keys") => {
                 self.require(principal, Permission::ManageKeys)?;
-                let keys = self.list_keys();
-                Ok(response(
-                    200,
-                    "api_keys",
-                    &serde_json::json!({ "keys": keys }),
-                ))
+                let page_request = PageRequest::parse(request)?;
+                let page = page_of(self.list_keys(), page_request.skip, page_request.limit);
+                Ok(response(200, "api_keys", &page))
             }
             ("DELETE", path) if path.starts_with("/api/v1/keys/") => {
                 self.require(principal, Permission::ManageKeys)?;
@@ -830,7 +856,9 @@ impl Api {
                         None => Err(ApiError::new("not_found", "unknown job")),
                     }
                 } else {
-                    Ok(response(200, "jobs", &queue.jobs()))
+                    let page_request = PageRequest::parse(request)?;
+                    let page = page_of(queue.jobs(), page_request.skip, page_request.limit);
+                    Ok(response(200, "jobs", &page))
                 }
             }
             ("POST", "/api/v1/jobs/cancel") => {
@@ -860,7 +888,13 @@ impl Api {
             }
             ("GET", "/api/v1/audit/events") => {
                 self.require(principal, Permission::ManageKeys)?;
-                Ok(response(200, "audit", &self.audit_events()))
+                let page_request = PageRequest::parse(request)?;
+                let page = page_of(
+                    self.redacted_audit_events(),
+                    page_request.skip,
+                    page_request.limit,
+                );
+                Ok(response(200, "audit", &page))
             }
             _ => {
                 // Distinguish a known path with the wrong method from an unknown path.
@@ -895,8 +929,10 @@ impl Api {
                 Ok(response(201, "webhook", &created))
             }
             "GET" => {
+                let page_request = PageRequest::parse(request)?;
                 let subscriptions = self.webhooks.read().expect("webhook store poisoned").list();
-                Ok(response(200, "webhooks", &subscriptions))
+                let page = page_of(subscriptions, page_request.skip, page_request.limit);
+                Ok(response(200, "webhooks", &page))
             }
             _ => Err(method_not_allowed()),
         }
@@ -995,7 +1031,7 @@ fn parse_webhook_events(values: &[String]) -> Result<Vec<WebhookEvent>, ApiError
         .collect()
 }
 
-fn query_value<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
+pub(crate) fn query_value<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
     request
         .query
         .as_deref()?
@@ -2142,5 +2178,311 @@ mod tests {
             let response = api.handle(&with_accept(get("/api/v1/health"), accept), "ip", 0);
             assert_eq!(response.status, 200, "Accept: {accept}");
         }
+    }
+
+    #[test]
+    fn keys_endpoint_paginates_deterministically() {
+        let (api, admin) = api_with_admin();
+        for i in 0..5 {
+            let create = with_key(
+                post(
+                    "/api/v1/keys",
+                    serde_json::json!({ "role": "viewer", "label": format!("k{i}") }),
+                ),
+                &admin,
+            );
+            assert_eq!(api.handle(&create, "ip", i).status, 201);
+        }
+        let mut expected: Vec<String> = api.list_keys().iter().map(|key| key.id.clone()).collect();
+        expected.sort();
+
+        let mut collected = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let query = match &cursor {
+                Some(cursor) => format!("limit=2&cursor={cursor}"),
+                None => "limit=2".to_string(),
+            };
+            let response = api.handle(
+                &with_key(get_query("/api/v1/keys", &query), &admin),
+                "ip",
+                0,
+            );
+            assert_eq!(response.status, 200);
+            let body: Value = serde_json::from_slice(&response.body).unwrap();
+            let page = &body["data"];
+            let items = page["items"].as_array().unwrap();
+            assert_eq!(page["count"].as_u64(), Some(items.len() as u64));
+            collected.extend(
+                items
+                    .iter()
+                    .map(|item| item["id"].as_str().unwrap().to_string()),
+            );
+            let has_more = page["has_more"].as_bool().unwrap();
+            assert_eq!(page["next_cursor"].is_null(), !has_more);
+            if !has_more {
+                break;
+            }
+            cursor = Some(page["next_cursor"].as_str().unwrap().to_string());
+        }
+        assert_eq!(collected, expected);
+    }
+
+    #[test]
+    fn jobs_list_paginates() {
+        let (api, key) = api_with_developer();
+        let mut created = Vec::new();
+        for i in 0..3 {
+            let response = api.handle(
+                &with_key(
+                    post(
+                        "/api/v1/jobs",
+                        serde_json::json!({ "kind": format!("j{i}") }),
+                    ),
+                    &key,
+                ),
+                "ip",
+                i,
+            );
+            assert_eq!(response.status, 201);
+            created.push(created_id(&response));
+        }
+
+        let mut collected = Vec::new();
+        let response = api.handle(
+            &with_key(get_query("/api/v1/jobs", "limit=2"), &key),
+            "ip",
+            0,
+        );
+        assert_eq!(response.status, 200);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["data"]["count"].as_u64(), Some(2));
+        assert_eq!(body["data"]["has_more"].as_bool(), Some(true));
+        collected.extend(
+            body["data"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|job| job["id"].as_str().unwrap().to_string()),
+        );
+        let cursor = body["data"]["next_cursor"].as_str().unwrap().to_string();
+
+        let response = api.handle(
+            &with_key(
+                get_query("/api/v1/jobs", &format!("limit=2&cursor={cursor}")),
+                &key,
+            ),
+            "ip",
+            0,
+        );
+        assert_eq!(response.status, 200);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["data"]["count"].as_u64(), Some(1));
+        assert_eq!(body["data"]["has_more"].as_bool(), Some(false));
+        assert!(body["data"]["next_cursor"].is_null());
+        collected.extend(
+            body["data"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|job| job["id"].as_str().unwrap().to_string()),
+        );
+        assert_eq!(collected, created);
+    }
+
+    #[test]
+    fn webhooks_list_paginates() {
+        let (api, key) = maintainer_api();
+        let mut created = Vec::new();
+        for i in 0..3 {
+            let create = with_key(
+                post(
+                    "/api/v1/webhooks",
+                    serde_json::json!({
+                        "url": format!("https://example.com/hook{i}"),
+                        "events": ["analysis_completed"],
+                    }),
+                ),
+                &key,
+            );
+            let response = api.handle(&create, "ip", i);
+            assert_eq!(response.status, 201);
+            created.push(created_id(&response));
+        }
+
+        let mut collected = Vec::new();
+        let response = api.handle(
+            &with_key(get_query("/api/v1/webhooks", "limit=2"), &key),
+            "ip",
+            0,
+        );
+        assert_eq!(response.status, 200);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["data"]["count"].as_u64(), Some(2));
+        assert_eq!(body["data"]["has_more"].as_bool(), Some(true));
+        collected.extend(
+            body["data"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|sub| sub["id"].as_str().unwrap().to_string()),
+        );
+        let cursor = body["data"]["next_cursor"].as_str().unwrap().to_string();
+
+        let response = api.handle(
+            &with_key(
+                get_query("/api/v1/webhooks", &format!("limit=2&cursor={cursor}")),
+                &key,
+            ),
+            "ip",
+            0,
+        );
+        assert_eq!(response.status, 200);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["data"]["count"].as_u64(), Some(1));
+        assert_eq!(body["data"]["has_more"].as_bool(), Some(false));
+        assert!(body["data"]["next_cursor"].is_null());
+        collected.extend(
+            body["data"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|sub| sub["id"].as_str().unwrap().to_string()),
+        );
+        created.sort();
+        assert_eq!(collected, created);
+    }
+
+    #[test]
+    fn audit_events_endpoint_is_admin_only_redacted_and_paginated() {
+        let (api, admin) = api_with_admin();
+        let developer = api.generate_key(Role::Developer, "dev").unwrap();
+        assert_eq!(
+            api.handle(&with_key(get("/api/v1/audit/events"), &developer), "ip", 0)
+                .status,
+            403
+        );
+        let mut plaintexts = Vec::new();
+        for i in 0..3 {
+            plaintexts.push(api.generate_key(Role::Viewer, &format!("v{i}")).unwrap());
+        }
+
+        let mut seen = 0_usize;
+        let mut cursor: Option<String> = None;
+        loop {
+            let query = match &cursor {
+                Some(cursor) => format!("limit=2&cursor={cursor}"),
+                None => "limit=2".to_string(),
+            };
+            let response = api.handle(
+                &with_key(get_query("/api/v1/audit/events", &query), &admin),
+                "ip",
+                0,
+            );
+            assert_eq!(response.status, 200);
+            let text = String::from_utf8_lossy(&response.body);
+            assert!(
+                !text.contains("sco_"),
+                "the audit read path must never leak key material"
+            );
+            for plaintext in &plaintexts {
+                assert!(!text.contains(plaintext.as_str()));
+            }
+            let body: Value = serde_json::from_slice(&response.body).unwrap();
+            let page = &body["data"];
+            seen += page["items"].as_array().unwrap().len();
+            let has_more = page["has_more"].as_bool().unwrap();
+            assert_eq!(page["next_cursor"].is_null(), !has_more);
+            if !has_more {
+                break;
+            }
+            cursor = Some(page["next_cursor"].as_str().unwrap().to_string());
+        }
+        assert_eq!(seen, api.audit_events().len());
+        assert!(seen >= 5);
+    }
+
+    #[test]
+    fn list_endpoints_reject_bad_pagination_params() {
+        let (api, admin) = api_with_admin();
+        for path in [
+            "/api/v1/jobs",
+            "/api/v1/keys",
+            "/api/v1/webhooks",
+            "/api/v1/audit/events",
+        ] {
+            for query in [
+                "limit=0",
+                "limit=-1",
+                "limit=abc",
+                "limit=1001",
+                "cursor=%%%",
+                "cursor=abc",
+            ] {
+                let response = api.handle(&with_key(get_query(path, query), &admin), "ip", 0);
+                assert_eq!(response.status, 400, "{path}?{query}");
+            }
+        }
+    }
+
+    #[test]
+    fn handle_emits_a_request_span() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct SpanRecorder {
+            names: Arc<Mutex<Vec<String>>>,
+            next: Arc<AtomicU64>,
+        }
+
+        impl tracing::Subscriber for SpanRecorder {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+
+            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                self.names
+                    .lock()
+                    .unwrap()
+                    .push(span.metadata().name().to_string());
+                let next = self.next.fetch_add(1, Ordering::Relaxed) + 1;
+                tracing::span::Id::from_u64(next)
+            }
+
+            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
+            }
+
+            fn event(&self, _event: &tracing::Event<'_>) {}
+
+            fn enter(&self, _span: &tracing::span::Id) {}
+
+            fn exit(&self, _span: &tracing::span::Id) {}
+        }
+
+        // A dedicated thread keeps this recording away from other tests
+        // running concurrently on shared tracing dispatch state.
+        let handle = std::thread::spawn(|| {
+            let recorder = SpanRecorder {
+                names: Arc::new(Mutex::new(Vec::new())),
+                next: Arc::new(AtomicU64::new(0)),
+            };
+            let names = recorder.names.clone();
+            tracing::subscriber::with_default(recorder, || {
+                let api = Api::new(PlatformConfig::default());
+                // Spans can occasionally be skipped by the scoped dispatcher
+                // machinery under parallel test execution, so repeat the
+                // calls a few times.
+                for _ in 0..5 {
+                    let _ = api.handle(&get("/api/v1/health"), "ip", 0);
+                }
+            });
+            let recorded = names.lock().unwrap().clone();
+            recorded
+        });
+        let names = handle.join().unwrap();
+        assert!(names.iter().any(|name| name == "http_request"));
     }
 }

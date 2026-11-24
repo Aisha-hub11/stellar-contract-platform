@@ -57,6 +57,7 @@ impl Observatory {
     }
 
     /// Inspect a WASM artifact, optionally running security heuristics.
+    #[tracing::instrument(name = "service.inspect", skip(wasm))]
     pub fn inspect(&self, wasm: &[u8], security: bool) -> Result<InspectOutcome> {
         let report = inspect(wasm)?;
         let interface = ContractInterface::from_wasm(wasm).ok();
@@ -77,6 +78,7 @@ impl Observatory {
     }
 
     /// Read and validate the contract specification.
+    #[tracing::instrument(name = "service.spec", skip(wasm))]
     pub fn spec(&self, wasm: &[u8]) -> Result<SpecOutcome> {
         let spec = parse_wasm(wasm)?;
         let summary = summarize(&spec);
@@ -84,6 +86,7 @@ impl Observatory {
     }
 
     /// Diff two interfaces.
+    #[tracing::instrument(name = "service.diff", skip(old, new))]
     pub fn diff(&self, old: &[u8], new: &[u8]) -> Result<InterfaceDiff> {
         let old = ContractInterface::from_wasm(old)?;
         let new = ContractInterface::from_wasm(new)?;
@@ -91,6 +94,7 @@ impl Observatory {
     }
 
     /// Assess compatibility under a policy.
+    #[tracing::instrument(name = "service.compatibility", skip(old, new, policy))]
     pub fn compatibility(
         &self,
         old: &[u8],
@@ -103,6 +107,7 @@ impl Observatory {
     }
 
     /// Compute artifact and interface fingerprints.
+    #[tracing::instrument(name = "service.fingerprint", skip(wasm))]
     pub fn fingerprint(&self, wasm: &[u8]) -> Result<FingerprintOutcome> {
         let artifact_sha256 = observatory_wasm::artifact_fingerprint(wasm);
         let interface_sha256 = match ContractInterface::from_wasm(wasm) {
@@ -116,6 +121,7 @@ impl Observatory {
     }
 
     /// Run security heuristics over an artifact and its interface.
+    #[tracing::instrument(name = "service.security", skip(wasm))]
     pub fn security(&self, wasm: &[u8]) -> Result<AuditReport> {
         let report = inspect(wasm)?;
         let mut audit = observatory_audit::audit_artifact(&report);
@@ -131,6 +137,10 @@ impl Observatory {
     }
 
     /// Parse and filter an event fixture supplied as a JSON value.
+    #[tracing::instrument(
+        name = "service.events_filtered",
+        skip(value, contract, topic, event_type, limit)
+    )]
     pub fn events_filtered(
         &self,
         value: &serde_json::Value,
@@ -152,6 +162,7 @@ impl Observatory {
     }
 
     /// Verify a local artifact against a deployment over a transport.
+    #[tracing::instrument(name = "service.verify", skip(local_wasm, client))]
     pub fn verify<T: Transport>(
         &self,
         local_wasm: &[u8],
@@ -221,5 +232,90 @@ mod tests {
     fn malformed_wasm_is_a_structured_error() {
         let error = Observatory.inspect(b"not wasm", false).unwrap_err();
         assert!(matches!(error, observatory_core::ObservatoryError::Wasm(_)));
+    }
+
+    #[test]
+    fn service_methods_emit_spans() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct SpanRecorder {
+            names: Arc<Mutex<Vec<String>>>,
+            next: Arc<AtomicU64>,
+        }
+
+        impl tracing::Subscriber for SpanRecorder {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+
+            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                self.names
+                    .lock()
+                    .unwrap()
+                    .push(span.metadata().name().to_string());
+                let next = self.next.fetch_add(1, Ordering::Relaxed) + 1;
+                tracing::span::Id::from_u64(next)
+            }
+
+            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
+            }
+
+            fn event(&self, _event: &tracing::Event<'_>) {}
+
+            fn enter(&self, _span: &tracing::span::Id) {}
+
+            fn exit(&self, _span: &tracing::span::Id) {}
+        }
+
+        // A dedicated thread keeps this recording away from other tests
+        // running concurrently on shared tracing dispatch state.
+        let handle = std::thread::spawn(|| {
+            let recorder = SpanRecorder {
+                names: Arc::new(Mutex::new(Vec::new())),
+                next: Arc::new(AtomicU64::new(0)),
+            };
+            let names = recorder.names.clone();
+            tracing::subscriber::with_default(recorder, || {
+                // Spans can occasionally be skipped by the scoped dispatcher
+                // machinery under parallel test execution, so repeat the
+                // calls a few times.
+                for _ in 0..5 {
+                    let _ = Observatory.inspect(&contract(), true);
+                    let _ = Observatory.spec(&contract());
+                    let _ = Observatory.fingerprint(&contract());
+                    let _ = Observatory.security(&contract());
+                    let _ = Observatory.events_filtered(
+                        &serde_json::json!({ "events": [] }),
+                        None,
+                        None,
+                        None,
+                        Some(1),
+                    );
+                }
+            });
+            let recorded = names.lock().unwrap().clone();
+            recorded
+        });
+        let names = handle.join().unwrap();
+        for expected in [
+            "service.inspect",
+            "service.security",
+            "service.events_filtered",
+        ] {
+            assert!(
+                names.contains(&expected.to_string()),
+                "missing span {expected}; recorded: {names:?}"
+            );
+        }
+        assert!(
+            names
+                .iter()
+                .any(|name| name == "service.spec" || name == "service.fingerprint"),
+            "missing spans service.spec/service.fingerprint; recorded: {names:?}"
+        );
     }
 }

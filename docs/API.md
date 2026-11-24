@@ -120,6 +120,33 @@ cached for 300 seconds and replayed for an identical request; a replay carries
 
 Every response carries `X-Request-Id`, a stable identifier for correlation.
 
+## Pagination
+
+The list endpoints are paginated with the optional `limit` and `cursor` query
+parameters:
+
+- `GET /api/v1/jobs` (list mode), `GET /api/v1/keys`, `GET /api/v1/webhooks`,
+  and `GET /api/v1/audit/events`.
+
+`limit` is an integer between 1 and 1000 and defaults to 100. Pages are taken
+over each endpoint's deterministic order: jobs, keys, and webhooks are
+id-ordered, and audit events are oldest-first. Every page response carries a
+`Page` object in the envelope's `data`:
+
+```json
+{
+  "items": [ { "id": "job-0000000000000001" } ],
+  "count": 1,
+  "has_more": false,
+  "next_cursor": null
+}
+```
+
+`has_more` is true exactly when `next_cursor` is non-null. Pass the previous
+page's `next_cursor` back as the `cursor` query parameter to fetch the next
+page. A malformed `limit` or `cursor` returns a structured `400`
+(`bad_request`).
+
 ## Endpoints
 
 ### `GET /api/v1/health` (public)
@@ -159,8 +186,9 @@ Body: `{ "role": "viewer|developer|maintainer|admin", "label": "ci", "scopes": [
 The response (`201`) contains the plaintext exactly once; listing never returns it.
 
 ### `GET /api/v1/keys` (admin)
-Lists key metadata (id, role, label, revocation state). Requires `manage_keys`.
-Hashes, secrets, and plaintext are never included.
+Lists key metadata (id, role, label, revocation state) as a paginated
+[`Page`](#pagination). Requires `manage_keys`. Hashes, secrets, and plaintext
+are never included.
 
 ### `DELETE /api/v1/keys/{id}` (admin)
 Revokes a key. Requires `manage_keys`. Revocation takes effect immediately; the
@@ -215,9 +243,10 @@ In-process background jobs for long-running work. Enqueue with:
 ```
 
 Repeating an `idempotency_key` returns the existing job. `GET /api/v1/jobs`
-lists jobs; `GET /api/v1/jobs?id=<id>` returns one job. States are `queued`,
-`running`, `succeeded`, `failed`, and `cancelled`. Concurrency is bounded and
-failures are recorded and retried up to `max_attempts`.
+lists jobs as a paginated [`Page`](#pagination); `GET /api/v1/jobs?id=<id>`
+returns one job. States are `queued`, `running`, `succeeded`, `failed`, and
+`cancelled`. Concurrency is bounded and failures are recorded and retried up
+to `max_attempts`.
 
 ### `POST /api/v1/jobs/cancel`
 Body `{ "id": "job-..." }`. Only queued jobs can be cancelled; anything else
@@ -226,7 +255,10 @@ returns a structured `400`.
 ### `GET /api/v1/audit/events`
 Requires `manage_keys` (admin). Returns structured audit events with
 `schema_version`, `timestamp`, `actor` (public key id), `action`, `resource`,
-`outcome`, and `request_id`. Secrets and plaintext keys are never recorded.
+`outcome`, and `request_id`, paginated as a [`Page`](#pagination). Events are
+redacted with the standard secret-redaction pass, so they contain no secrets;
+key ids, job ids, and paths remain readable. The log itself is built to carry
+no secrets, and secrets and plaintext keys are never recorded.
 ### Webhook subscriptions
 
 Webhook registration requires `manage_webhooks` (the `maintainer` or `admin`
@@ -235,7 +267,7 @@ role). URLs must use `https` and must not embed credentials.
 | Method | Path | Purpose |
 | ------ | ---- | ------- |
 | `POST` | `/api/v1/webhooks` | Register a subscription |
-| `GET` | `/api/v1/webhooks` | List subscriptions |
+| `GET` | `/api/v1/webhooks` | List subscriptions (paginated) |
 | `GET` | `/api/v1/webhooks/{id}` | Read a subscription |
 | `PATCH` | `/api/v1/webhooks/{id}` | Update URL, events, or active state |
 | `DELETE` | `/api/v1/webhooks/{id}` | Delete a subscription |
