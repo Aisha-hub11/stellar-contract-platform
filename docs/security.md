@@ -137,6 +137,10 @@ on that path. The live transport (`observatory-rpc` feature `live`) revalidates
 the endpoint and address policy before each connection, does not follow
 redirects, does not use environment proxies, and bounds the response body.
 
+The URL rules, accepted and rejected examples, and the endpoint trust model
+(including that RPC responses are untrusted input) are documented in
+[deployment.md](deployment.md#endpoint-validation-and-trust).
+
 ## SARIF output
 
 `inspect --security --format sarif` renders the same findings as a
