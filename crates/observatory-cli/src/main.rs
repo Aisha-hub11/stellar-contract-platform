@@ -333,6 +333,8 @@ enum FormatArg {
     Text,
     /// Machine-readable JSON.
     Json,
+    /// SARIF 2.1.0 for audit findings (requires `inspect --security`).
+    Sarif,
 }
 
 impl From<FormatArg> for OutputFormat {
@@ -340,6 +342,7 @@ impl From<FormatArg> for OutputFormat {
         match value {
             FormatArg::Text => OutputFormat::Human,
             FormatArg::Json => OutputFormat::Json,
+            FormatArg::Sarif => OutputFormat::Sarif,
         }
     }
 }
@@ -389,6 +392,13 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli, format: OutputFormat) -> Result<ObservatoryExit> {
+    if format == OutputFormat::Sarif
+        && !matches!(&cli.command, Command::Inspect { security: true, .. })
+    {
+        return Err(ObservatoryError::invalid(
+            "SARIF output is only available for `inspect --security`",
+        ));
+    }
     if cli.verbose > 0 && !cli.quiet {
         eprintln!(
             "{}: running `{}` (format={format})",
@@ -421,6 +431,15 @@ fn run(cli: &Cli, format: OutputFormat) -> Result<ObservatoryExit> {
                 let suppressions = load_suppressions(path)?;
                 audit = audit
                     .apply_suppressions(&suppressions, &observatory_audit::current_utc_date())?;
+            }
+            if format == OutputFormat::Sarif {
+                let document = observatory_audit::to_sarif(&audit);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&document)
+                        .map_err(|error| ObservatoryError::internal(error.to_string()))?
+                );
+                return Ok(ObservatoryExit::Success);
             }
             let section = match dump_section {
                 Some(name) => {
@@ -1026,6 +1045,11 @@ fn emit<T: Serialize>(
             println!("{}", report(kind, data).to_json_pretty()?);
         }
         OutputFormat::Human => human(),
+        OutputFormat::Sarif => {
+            return Err(ObservatoryError::invalid(
+                "SARIF output is only available for `inspect --security`",
+            ));
+        }
     }
     Ok(())
 }
@@ -1038,7 +1062,7 @@ fn emit_error(format: OutputFormat, error: &ObservatoryError) {
                 ErrorReport::from_error(error).to_json().unwrap_or_default()
             );
         }
-        OutputFormat::Human => eprintln!("error: {error}"),
+        OutputFormat::Human | OutputFormat::Sarif => eprintln!("error: {error}"),
     }
 }
 

@@ -9,7 +9,7 @@ stellar-contract-platform [OPTIONS] <COMMAND>
 | Option | Description |
 | ------ | ----------- |
 | `--json` | Emit a machine-readable JSON report envelope. Equivalent to `--format json`; when both are given, `--json` wins. |
-| `--format <human\|json>` | Output format; defaults to `human`. `text` is accepted as an alias for `human`. |
+| `--format <human\|json\|sarif>` | Output format; defaults to `human`. `text` is accepted as an alias for `human`. `sarif` is accepted only by `inspect --security`. |
 | `--config <FILE>` | Project configuration file; discovered automatically when omitted. |
 | `--profile <NAME>` | Select a per-network configuration profile. See [configuration.md](configuration.md#per-network-profiles). |
 | `-q`, `--quiet` | Suppress non-essential diagnostics (progress/notes and the `api serve` listening banner). Primary results still print, and `--quiet` wins over `--verbose`. |
@@ -34,6 +34,15 @@ TOML.
 hex. The dump is bounded at 64 KiB: a larger payload is rejected with an error
 rather than truncated. An absent section is reported as absent and does not fail
 the command. The section is only read; it is never executed.
+
+`--format sarif` (with `--security`) prints the findings as a SARIF 2.1.0
+document instead of the JSON report envelope, for code-scanning dashboards. Rules
+are emitted once per finding id with a short description and a default level
+mapped from the audit severity (`ERROR` to `error`, `WARN` to `warning`);
+results carry the rule id, level, message, and a `locations` entry when the
+finding has a path. Rules and results are sorted, so the document is
+deterministic. The document describes bounded heuristics and is not a security
+certification. See [security.md](security.md#sarif-output).
 
 ### `spec <WASM> [--function <NAME>] [--type <TYPE>]`
 

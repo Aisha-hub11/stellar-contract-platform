@@ -13,6 +13,8 @@ pub enum OutputFormat {
     Human,
     /// Stable, machine-readable JSON.
     Json,
+    /// SARIF 2.1.0 (only for `inspect --security`).
+    Sarif,
 }
 
 impl FromStr for OutputFormat {
@@ -22,8 +24,9 @@ impl FromStr for OutputFormat {
         match value.trim().to_ascii_lowercase().as_str() {
             "human" | "text" => Ok(OutputFormat::Human),
             "json" => Ok(OutputFormat::Json),
+            "sarif" => Ok(OutputFormat::Sarif),
             other => Err(ObservatoryError::invalid(format!(
-                "unknown output format `{other}`; expected human or json"
+                "unknown output format `{other}`; expected human, json, or sarif"
             ))),
         }
     }
@@ -34,6 +37,7 @@ impl fmt::Display for OutputFormat {
         f.write_str(match self {
             OutputFormat::Human => "human",
             OutputFormat::Json => "json",
+            OutputFormat::Sarif => "sarif",
         })
     }
 }
@@ -46,6 +50,10 @@ mod tests {
     fn parses_formats() {
         assert_eq!("json".parse::<OutputFormat>().unwrap(), OutputFormat::Json);
         assert_eq!("TEXT".parse::<OutputFormat>().unwrap(), OutputFormat::Human);
+        assert_eq!(
+            "sarif".parse::<OutputFormat>().unwrap(),
+            OutputFormat::Sarif
+        );
         assert!("xml".parse::<OutputFormat>().is_err());
     }
 }

@@ -137,6 +137,24 @@ on that path. The live transport (`observatory-rpc` feature `live`) revalidates
 the endpoint and address policy before each connection, does not follow
 redirects, does not use environment proxies, and bounds the response body.
 
+## SARIF output
+
+`inspect --security --format sarif` renders the same findings as a
+[SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
+document for code-scanning dashboards:
+
+- `tool.driver` names the tool and lists one rule per emitted finding id, each
+  with a short description and a `defaultConfiguration.level` mapped from the
+  audit severity (`ERROR` to `error`, `WARN` to `warning`).
+- `results` carry `ruleId`, `level`, `message.text`, and a `locations` entry
+  with the finding path when one is recorded.
+- Rules and results are sorted, so the same report produces the same document.
+
+The document is not a report envelope, so there is no `docs/schemas` JSON
+Schema for it; the structural test in `observatory-audit` validates the SARIF
+shape instead. Like the findings themselves, it describes structural
+inconsistencies and is **not** a security certification.
+
 ## What is out of scope
 
 - Detecting malicious contract logic.

@@ -100,6 +100,7 @@ Early but practical. The project focuses on contract intelligence, compatibility
 - [Getting started](docs/getting-started.md)
 - [Installation](docs/installation.md)
 - [CLI reference](docs/cli.md)
+- [Container image](docs/container-image.md)
 - [SDKs](docs/sdk.md)
 - [Compatibility](docs/compatibility.md)
 - [Verification](docs/verification.md)
