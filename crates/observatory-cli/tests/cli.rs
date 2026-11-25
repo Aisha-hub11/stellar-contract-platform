@@ -1098,6 +1098,7 @@ fn policy_file_selects_rules_and_echoes_the_resolved_policy() {
           signature_change_is_breaking: false\n\
           type_removal_is_breaking: false\n\
           type_change_is_breaking: false\n\
+          struct_field_addition_is_breaking: false\n\
           event_removal_is_breaking: false\n\
           event_change_is_breaking: false\n",
         ".yml",
@@ -1116,6 +1117,9 @@ fn policy_file_selects_rules_and_echoes_the_resolved_policy() {
         .stdout(predicate::str::contains("\"status\": \"compatible\""))
         .stdout(predicate::str::contains(
             "\"function_removal_is_breaking\": false",
+        ))
+        .stdout(predicate::str::contains(
+            "\"struct_field_addition_is_breaking\": false",
         ));
 
     let invalid = write_temp(b"function_removal_is_breaking: sometimes\n", ".yml");
@@ -1132,6 +1136,48 @@ fn policy_file_selects_rules_and_echoes_the_resolved_policy() {
         .code(2)
         .stdout(predicate::str::contains("function_removal_is_breaking"))
         .stdout(predicate::str::contains("\"code\":\"invalid_input\""));
+}
+
+#[test]
+fn struct_addition_fixture_follows_the_explicit_policy() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/compat");
+    let old = root.join("struct-addition/baseline.wasm");
+    let new = root.join("struct-addition/head.wasm");
+    let old = old.to_str().unwrap();
+    let new = new.to_str().unwrap();
+
+    binary()
+        .args(["compat", old, new, "--json"])
+        .assert()
+        .code(6)
+        .stdout(predicate::str::contains("\"status\": \"incompatible\""))
+        .stdout(predicate::str::contains("type::Payload"));
+
+    let policy = write_temp(
+        b"function_removal_is_breaking: true\n\
+          signature_change_is_breaking: true\n\
+          type_removal_is_breaking: true\n\
+          type_change_is_breaking: true\n\
+          struct_field_addition_is_breaking: false\n\
+          event_removal_is_breaking: true\n\
+          event_change_is_breaking: true\n",
+        ".yml",
+    );
+    binary()
+        .args([
+            "compat",
+            old,
+            new,
+            "--policy-file",
+            policy.path().to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\": \"compatible\""))
+        .stdout(predicate::str::contains(
+            "\"struct_field_addition_is_breaking\": false",
+        ));
 }
 
 #[test]
