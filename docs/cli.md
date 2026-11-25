@@ -77,10 +77,13 @@ Assess compatibility under a documented policy. Exits `6` when incompatible.
 `--policy-file` loads explicit rules from a `.yml`, `.yaml`, `.toml`, or `.json`
 document; see [compatibility.md](compatibility.md).
 
-### `fingerprint <WASM>`
+### `fingerprint <WASM> [--algorithm sha256|sha512]`
 
-Prints the artifact SHA-256 and, when a specification is present, the canonical
-interface fingerprint.
+Prints the artifact digest and, when a specification is present, the canonical
+interface digest. SHA-256 is the default; `--algorithm sha512` selects SHA-512.
+The report includes the selected `algorithm`. The legacy field names
+`artifact_sha256` and `interface_sha256` are retained for compatibility; they
+hold the digest for the reported algorithm.
 
 ### `deployment inspect <CONTRACT_ID> --rpc-fixture <FILE> [--network <NET>] [--rpc-url <URL>]`
 

@@ -212,7 +212,12 @@ Returns the compatibility assessment. `policy` is `strict` (default) or
 `lenient`.
 
 ### `POST /api/v1/contracts/fingerprint`
-Body: `{ "wasm_base64": "..." }`. Returns artifact and interface fingerprints.
+Body: `{ "wasm_base64": "...", "algorithm": "sha256" }`. `algorithm` is
+optional and accepts `sha256` (the default) or `sha512`. Returns artifact and
+interface digests plus the selected `algorithm`. The legacy
+`artifact_sha256`/`interface_sha256` field names are retained for compatibility;
+they hold the digest for the reported algorithm. Unknown algorithms return a
+structured `400`.
 
 ### `POST /api/v1/contracts/security`
 Body: `{ "wasm_base64": "..." }`. Returns bounded heuristic findings.

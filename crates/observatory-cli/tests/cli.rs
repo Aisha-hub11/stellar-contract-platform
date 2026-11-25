@@ -277,14 +277,63 @@ fn spec_type_renders_udt_documentation() {
 }
 
 #[test]
-fn fingerprint_is_sha256() {
+fn fingerprint_defaults_to_sha256() {
     let file = write_temp(&minimal_module(), ".wasm");
-    binary()
+    let assert = binary()
         .args(["fingerprint", file.path().to_str().unwrap(), "--json"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("artifact_sha256"))
-        .stdout(predicate::str::contains("interface_sha256"));
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["data"]["algorithm"], "sha256");
+    assert_eq!(
+        report["data"]["artifact_sha256"].as_str().unwrap().len(),
+        64
+    );
+}
+
+#[test]
+fn fingerprint_selects_sha512() {
+    let file = write_temp(
+        &module_with_spec(&[spec_function("ping", &[], Some(ScSpecTypeDef::Bool))]),
+        ".wasm",
+    );
+    let assert = binary()
+        .args([
+            "fingerprint",
+            file.path().to_str().unwrap(),
+            "--algorithm",
+            "sha512",
+            "--json",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["data"]["algorithm"], "sha512");
+    assert_eq!(
+        report["data"]["artifact_sha256"].as_str().unwrap().len(),
+        128
+    );
+    assert_eq!(
+        report["data"]["interface_sha256"].as_str().unwrap().len(),
+        128
+    );
+}
+
+#[test]
+fn fingerprint_rejects_unknown_algorithm() {
+    let file = write_temp(&minimal_module(), ".wasm");
+    binary()
+        .args([
+            "fingerprint",
+            file.path().to_str().unwrap(),
+            "--algorithm",
+            "md5",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("unsupported hash algorithm"));
 }
 
 #[test]

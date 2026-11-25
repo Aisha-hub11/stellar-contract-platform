@@ -29,6 +29,17 @@ pub struct WasmRequest {
     pub wasm_base64: String,
 }
 
+/// Request body for fingerprinting.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FingerprintRequest {
+    /// Base64-encoded WASM artifact.
+    pub wasm_base64: String,
+    /// Hash algorithm: `sha256` (default) or `sha512`.
+    #[serde(default)]
+    pub algorithm: Option<String>,
+}
+
 /// Request body for a two-artifact operation.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -18,7 +18,8 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use observatory_compat::{assess, CompatibilityStatus};
 use observatory_core::{
-    ExitCode as ObservatoryExit, Network, ObservatoryError, OutputFormat, Result,
+    hash::HashAlgorithm, ExitCode as ObservatoryExit, Network, ObservatoryError, OutputFormat,
+    Result,
 };
 use observatory_diff::{diff, Severity};
 use observatory_interface::ContractInterface;
@@ -137,6 +138,9 @@ enum Command {
     Fingerprint {
         /// Path to a `.wasm` file.
         wasm: PathBuf,
+        /// Hash algorithm: sha256 (default) or sha512.
+        #[arg(long, value_name = "ALGORITHM", default_value = "sha256")]
+        algorithm: String,
     },
     /// Inspect a deployed contract using a mocked RPC fixture.
     #[command(subcommand)]
@@ -591,19 +595,21 @@ fn run(cli: &Cli, format: OutputFormat) -> Result<ObservatoryExit> {
                 _ => ObservatoryExit::Success,
             })
         }
-        Command::Fingerprint { wasm } => {
+        Command::Fingerprint { wasm, algorithm } => {
+            let algorithm = HashAlgorithm::parse(algorithm)?;
             // Hash by streaming so large artifacts are not buffered whole. The
             // interface fingerprint still needs the bytes; when the artifact
             // exceeds the load bound it is simply omitted.
-            let artifact = observatory_wasm::artifact_fingerprint_file(wasm)?;
+            let artifact = observatory_wasm::artifact_fingerprint_file_with(wasm, algorithm)?;
             let interface = match observatory_wasm::load_file(wasm) {
                 Ok(bytes) => ContractInterface::from_wasm(&bytes)
                     .ok()
-                    .map(|interface| interface.fingerprint())
+                    .map(|interface| interface.fingerprint_with(algorithm))
                     .transpose()?,
                 Err(_) => None,
             };
             let payload = serde_json::json!({
+                "algorithm": algorithm.as_str(),
                 "artifact_sha256": artifact,
                 "interface_sha256": interface,
             });
@@ -1300,6 +1306,7 @@ fn print_compat(assessment: &observatory_compat::CompatibilityAssessment) {
 }
 
 fn print_fingerprint(payload: &serde_json::Value) {
+    println!("algorithm: {}", payload["algorithm"]);
     println!("artifact_sha256: {}", payload["artifact_sha256"]);
     if let Some(interface) = payload["interface_sha256"].as_str() {
         println!("interface_sha256: {interface}");
