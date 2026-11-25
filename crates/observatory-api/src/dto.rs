@@ -66,7 +66,7 @@ pub struct EventsRequest {
     /// Only keep events for this contract id.
     #[serde(default)]
     pub contract: Option<String>,
-    /// Only keep events whose topic matches this text.
+    /// Topic filter: bare substring, `name=<symbol>`, or `indexN=<symbol>`.
     #[serde(default)]
     pub topic: Option<String>,
     /// Only keep events of this type (`system`, `contract`, `diagnostic`).

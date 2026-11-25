@@ -56,7 +56,10 @@ The `--json` output is unchanged.
 
 ### `events [<FILE>] [--rpc-fixture <FILE>] [--contract <ID>] [--topic <TEXT>] [--type <TYPE>] [--limit <N>]`
 
-Decodes an event fixture and filters it. `--limit` is applied last.
+Decodes an event fixture and filters it. `--limit` is applied last. `--topic`
+accepts a bare substring, `name=<symbol>` for an exact symbol match, or
+`indexN=<symbol>` for an exact match at zero-based symbol position `N`. Malformed
+filters exit `2` with a structured error.
 
 `--rpc-fixture` instead reads a mock `getEvents` JSON-RPC fixture and paginates
 it offline: provide a `{ "__sequence": [page1, page2, ...] }` fixture where each

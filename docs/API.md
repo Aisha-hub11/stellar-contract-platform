@@ -232,8 +232,11 @@ Fixture-backed event query. Body:
 
 `fixture` accepts the same shapes as the CLI (an array, an object with an
 `events` array, a raw event object, or a base64 `ContractEvent`). Filters are
-applied in the order contract, type, topic, then limit. `limit` defaults to 100
-and is bounded to 1000. Malformed fixtures return a structured `400`.
+applied in the order contract, type, topic, then limit. `topic` accepts a bare
+substring, `name=<symbol>` for an exact symbol match, or `indexN=<symbol>` for an
+exact match at zero-based symbol position `N`; indices count extracted
+symbol/string topics only. `limit` defaults to 100 and is bounded to 1000.
+Malformed fixtures or topic filters return a structured `400`.
 
 ### `GET /api/v1/jobs` and `POST /api/v1/jobs`
 In-process background jobs for long-running work. Enqueue with:

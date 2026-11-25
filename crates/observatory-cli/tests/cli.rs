@@ -342,6 +342,46 @@ fn events_filters_fixture() {
 }
 
 #[test]
+fn events_accept_structured_topic_filters() {
+    use stellar_xdr::{Limits, ScSymbol, StringM, WriteXdr};
+    fn topic(text: &str) -> String {
+        stellar_xdr::ScVal::Symbol(ScSymbol(StringM::try_from(text).unwrap()))
+            .to_xdr_base64(Limits::none())
+            .unwrap()
+    }
+    let fixture = format!(
+        r#"{{"events":[
+            {{"contractId":"CAAA","type":"contract","topics":["{}","{}"],"data":null}},
+            {{"contractId":"CBBB","type":"contract","topics":["{}","{}"],"data":null}}
+        ]}}"#,
+        topic("transfer"),
+        topic("from"),
+        topic("transfer"),
+        topic("to"),
+    );
+    let file = write_temp(fixture.as_bytes(), ".json");
+    let path = file.path().to_str().unwrap();
+
+    binary()
+        .args(["events", path, "--topic", "name=transfer", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"returned\": 2"));
+
+    binary()
+        .args(["events", path, "--topic", "index1=from", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"returned\": 1"));
+
+    binary()
+        .args(["events", path, "--topic", "index=from", "--json"])
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("topic filter"));
+}
+
+#[test]
 fn completions_emit_non_empty_scripts() {
     for shell in ["bash", "zsh", "fish", "powershell"] {
         binary()

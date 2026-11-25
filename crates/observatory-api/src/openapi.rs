@@ -134,7 +134,10 @@ pub fn document() -> Value {
                             "oneOf": [{ "type": "array" }, { "type": "object" }, { "type": "string" }]
                         },
                         "contract": { "type": ["string", "null"] },
-                        "topic": { "type": ["string", "null"] },
+                        "topic": {
+                            "type": ["string", "null"],
+                            "description": "Bare substring, name=<symbol>, or indexN=<symbol>. Indices count extracted symbol/string topics only."
+                        },
                         "type": { "type": ["string", "null"] },
                         "limit": {
                             "type": ["integer", "null"],

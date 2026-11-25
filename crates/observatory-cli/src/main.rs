@@ -100,8 +100,8 @@ enum Command {
         /// Filter by contract id.
         #[arg(long)]
         contract: Option<String>,
-        /// Filter by topic text.
-        #[arg(long)]
+        /// Filter by topic: bare substring, name=<symbol>, or indexN=<symbol>.
+        #[arg(long, value_name = "FILTER")]
         topic: Option<String>,
         /// Filter by event type.
         #[arg(long = "type")]
@@ -529,11 +529,16 @@ fn run(cli: &Cli, format: OutputFormat) -> Result<ObservatoryExit> {
                     ));
                 }
             };
+            let topic_filter = topic
+                .as_deref()
+                .map(observatory_events::TopicFilter::parse)
+                .transpose()?;
             let filtered = observatory_events::filter(
                 &events,
                 &observatory_events::EventFilter {
                     contract: contract.clone(),
-                    topic: topic.clone(),
+                    topic: None,
+                    topic_filter,
                     event_type: event_type.clone(),
                     limit: *limit,
                 },

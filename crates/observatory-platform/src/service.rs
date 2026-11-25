@@ -150,11 +150,15 @@ impl Observatory {
         limit: Option<usize>,
     ) -> Result<Vec<EventRecord>> {
         let events = observatory_events::parse_events(value)?;
+        let topic_filter = topic
+            .map(observatory_events::TopicFilter::parse)
+            .transpose()?;
         Ok(observatory_events::filter(
             &events,
             &observatory_events::EventFilter {
                 contract: contract.map(str::to_string),
-                topic: topic.map(str::to_string),
+                topic: None,
+                topic_filter,
                 event_type: event_type.map(str::to_string),
                 limit,
             },
